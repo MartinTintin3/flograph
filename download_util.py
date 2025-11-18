@@ -1,6 +1,8 @@
-import requests
 from collections import deque
+from datetime import date, datetime
+from typing import Optional
 
+import requests
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 
 import db
@@ -21,18 +23,68 @@ def _normalize_weight_filters(weight_classes):
 	return normalized or None
 
 
-def _is_weight_allowed(weight_class_id, weight_class_name, allowed_weights):
-	if not allowed_weights:
-		return True
-	candidates = []
-	if weight_class_id:
-		candidates.append(str(weight_class_id).lower())
-	if weight_class_name:
-		candidates.append(str(weight_class_name).lower())
-	return any(candidate in allowed_weights for candidate in candidates)
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+	if not value:
+		return None
+	sanitized = value.replace("Z", "+00:00")
+	try:
+		return datetime.fromisoformat(sanitized)
+	except ValueError:
+		return None
 
 
-def update_db(data, this_id: str, allowed_weights=None):
+def _normalize_date_bound(value: Optional[str]) -> Optional[date]:
+	if not value:
+		return None
+	parsed = _parse_iso_datetime(value)
+	return parsed.date() if parsed else None
+
+
+def _resolve_match_timestamp(data, match) -> tuple[Optional[datetime], Optional[str]]:
+	attributes = match["attributes"]
+	for key in ("goDateTime", "startDateTime", "endDateTime"):
+		raw_value = attributes.get(key)
+		parsed = _parse_iso_datetime(raw_value)
+		if parsed:
+			return parsed, raw_value
+
+	event_id = attributes.get("eventId")
+	for obj in data.get("included", []):
+		if obj.get("type") != "event":
+			continue
+		if event_id and obj.get("id") != event_id:
+			continue
+		event_attrs = obj.get("attributes", {})
+		for key in ("startDateTime", "endDateTime"):
+			raw_value = event_attrs.get(key)
+			parsed = _parse_iso_datetime(raw_value)
+			if parsed:
+				return parsed, raw_value
+	return None, None
+
+
+def _extract_match_date(data, match) -> Optional[date]:
+	timestamp, _ = _resolve_match_timestamp(data, match)
+	return timestamp.date() if timestamp else None
+
+
+def _is_date_allowed(match_date: Optional[date], start_date: Optional[date], end_date: Optional[date]) -> bool:
+	if match_date is None:
+		return start_date is None and end_date is None
+	if start_date and match_date < start_date:
+		return False
+	if end_date and match_date > end_date:
+		return False
+	return True
+
+
+def update_db(
+	data,
+	this_id: str,
+	allowed_weights=None,
+	start_date: Optional[date] = None,
+	end_date: Optional[date] = None,
+):
 	lookup = {}
 
 	opponents = set()
@@ -42,7 +94,7 @@ def update_db(data, this_id: str, allowed_weights=None):
 		if obj["type"] == "team":
 			db.create_team(obj["attributes"]["identityTeamId"], obj["attributes"]["name"])
 		elif obj["type"] == "event":
-			db.create_event(id=obj["id"], name=obj["attributes"]["name"], date=obj["attributes"]["startDateTime"], location=obj["attributes"]["location"]["name"])
+			db.create_event(id=obj["id"], name=obj["attributes"]["name"], date=obj["attributes"].get("startDateTime",obj["attributes"].get("endDateTime", None)), location=obj["attributes"]["location"]["name"])
 	
 	for obj in data.get("included", []):
 		if obj["type"] == "wrestler":
@@ -58,30 +110,50 @@ def update_db(data, this_id: str, allowed_weights=None):
 		top_wrestler = get_lookup(match["attributes"].get("topWrestlerId", None), lookup, None)
 		bottom_wrestler = get_lookup(match["attributes"].get("bottomWrestlerId", None), lookup, None)
 
-		if (top_wrestler is not None) and (bottom_wrestler is not None):
-			weight_class_id = match["attributes"].get("weightClassId", None)
-			weight_class_name = lookup.get(weight_class_id, {}).get("attributes", {}).get("name", None)
-			if not _is_weight_allowed(weight_class_id, weight_class_name, allowed_weights):
-				continue
-			opponents.add(top_wrestler["attributes"]["identityPersonId"] if top_wrestler["attributes"]["identityPersonId"] != this_id else bottom_wrestler["attributes"]["identityPersonId"])
+		if top_wrestler is None or bottom_wrestler is None:
+			continue
 
-			winner_wrestler = top_wrestler if match["attributes"]["winnerWrestlerId"] == top_wrestler.get("id", None) else bottom_wrestler
+		top_attrs = top_wrestler.get("attributes", {})
+		bottom_attrs = bottom_wrestler.get("attributes", {})
+		top_person_id = top_attrs.get("identityPersonId")
+		bottom_person_id = bottom_attrs.get("identityPersonId")
+		if top_person_id is None or bottom_person_id is None:
+			continue
 
-			db.create_match(
-				id=match["id"],
-				topWrestler_id=top_wrestler["attributes"]["identityPersonId"],
-				bottomWrestler_id=bottom_wrestler["attributes"]["identityPersonId"],
-				winner_id=winner_wrestler["attributes"]["identityPersonId"],
-				weightClass=weight_class_name,
-				event_id=match["attributes"].get("eventId", None),
-				date=match["attributes"].get("goDateTime", None),
-				result=match["attributes"]["result"],
-				winType=match["attributes"]["winType"])
+		weight_class_id = match["attributes"].get("weightClassId", None)
+		weight_class_name = lookup.get(weight_class_id, {}).get("attributes", {}).get("name", None)
+		if not weight_class_name:
+			continue
+		if allowed_weights and weight_class_name.lower() not in allowed_weights:
+			continue
+		match_datetime = _extract_match_date(data, match)
+		if not _is_date_allowed(match_datetime, start_date, end_date):
+			continue
+		opponent_id = top_person_id if top_person_id != this_id else bottom_person_id
+		opponents.add(opponent_id)
+
+		winner_wrestler = top_wrestler if match["attributes"]["winnerWrestlerId"] == top_wrestler.get("id", None) else bottom_wrestler
+		winner_attrs = winner_wrestler.get("attributes", {})
+		winner_person_id = winner_attrs.get("identityPersonId")
+		if winner_person_id is None:
+			continue
+		_, match_timestamp = _resolve_match_timestamp(data, match)
+
+		db.create_match(
+			id=match["id"],
+			topWrestler_id=top_person_id,
+			bottomWrestler_id=bottom_person_id,
+			winner_id=winner_person_id,
+			weightClass=weight_class_name,
+			event_id=match["attributes"].get("eventId", None),
+			date=match_timestamp,
+			result=match["attributes"].get("result"),
+			winType=match["attributes"].get("winType"))
 	
 	db.mark_fetch(this_id)
 	return opponents
 
-def download_matches(id, allowed_weights=None):
+def download_matches(id, allowed_weights=None, start_date: Optional[str] = None, end_date: Optional[str] = None):
 	offset = 0
 	data = None
 	cur = f"https://floarena-api.flowrestling.org/bouts/?identityPersonId={id}&page[size]={PAGE_SIZE}&page[offset]={offset}&hasResult=true&include=" + ",".join(include)
@@ -90,14 +162,16 @@ def download_matches(id, allowed_weights=None):
 	cur += "&fields[team]=name,identityTeamId"
 	cur += "&fields[event]=name,startDateTime,location"
 	cur += "&fields[weightClass]=name"
-	cur += "&fields[bout]=topWrestlerId,bottomWrestlerId,weightClassId,eventId,goDateTime,result,winnerWrestlerId,winType"
+	cur += "&fields[bout]=topWrestlerId,bottomWrestlerId,weightClassId,eventId,goDateTime,startDateTime,endDateTime,result,winnerWrestlerId,winType,eventId"
 
 	req = requests.get(cur)
 	if req.status_code != 200:
 		raise Exception(f"Failed to download matches for id {id}: {req.status_code} {req.text}")
 	data = req.json()
 
-	opponents = update_db(data, id, allowed_weights)
+	start_bound = _normalize_date_bound(start_date)
+	end_bound = _normalize_date_bound(end_date)
+	opponents = update_db(data, id, allowed_weights, start_bound, end_bound)
 
 	while "next" in data["links"] and data["links"]["next"] != cur:
 		cur = data["links"]["next"]
@@ -105,12 +179,12 @@ def download_matches(id, allowed_weights=None):
 		if req.status_code != 200:
 			raise Exception(f"Failed to download matches for id {id}: {req.status_code}")
 		next_data = req.json()
-		opponents.update(update_db(next_data, id, allowed_weights))
+		opponents.update(update_db(next_data, id, allowed_weights, start_bound, end_bound))
 		data = next_data
 	
 	return opponents
 
-def crawl(seed_id: str, depth: int = 10, reset: bool = False, allowed_weights=None):
+def crawl(seed_id: str, depth: int = 10, reset: bool = False, allowed_weights=None, start_date: Optional[str] = None, end_date: Optional[str] = None):
 	if reset:
 		db.clear_crawler_state()
 
@@ -224,7 +298,7 @@ def crawl(seed_id: str, depth: int = 10, reset: bool = False, allowed_weights=No
 				db.remove_from_queue(wrestler_id)
 				continue
 
-			opponents = download_matches(wrestler_id, allowed_weight_filters)
+			opponents = download_matches(wrestler_id, allowed_weight_filters, start_date, end_date)
 			processed.add(wrestler_id)
 			db.mark_wrestler_processed(wrestler_id)
 			progress.advance(task_id, 1)

@@ -1,325 +1,113 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>Wrestling Graph · Reagraph</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      * { box-sizing: border-box; }
-      :root {
-        color-scheme: dark;
-        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      }
-      body {
-        margin: 0;
-        background: #030303;
-        color: #f8fafc;
-        min-height: 100vh;
-      }
-      #root {
-        width: 100vw;
-        height: 100vh;
-      }
-      .stage {
-        position: relative;
-        width: 100%;
-        height: 100%;
-        overflow: hidden;
-      }
-      .info-panel {
-        position: absolute;
-        top: 16px;
-        left: 16px;
-        background: rgba(8, 8, 12, 0.82);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 14px;
-        padding: 14px 16px;
-        width: min(320px, calc(100vw - 32px));
-        backdrop-filter: blur(14px);
-        box-shadow: 0 14px 28px rgba(0, 0, 0, 0.4);
-        pointer-events: auto;
-      }
-      .info-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-size: 0.85rem;
-        margin-bottom: 6px;
-        gap: 8px;
-      }
-      .info-meta {
-        color: #e2e8f0;
-        white-space: nowrap;
-      }
-      .ghost-btn {
-        background: transparent;
-        border: 1px solid rgba(255, 255, 255, 0.4);
-        color: inherit;
-        font-size: 0.75rem;
-        padding: 4px 12px;
-        border-radius: 999px;
-        cursor: pointer;
-        transition: background 180ms ease, border-color 180ms ease;
-      }
-      .ghost-btn:hover,
-      .ghost-btn:focus {
-        background: rgba(255, 255, 255, 0.12);
-        border-color: rgba(255, 255, 255, 0.8);
-      }
-      .info-hint {
-        margin: 0 0 10px;
-        font-size: 0.8rem;
-        color: #a5b4fc;
-      }
-      .info-details h2 {
-        margin: 0;
-        font-size: 1.25rem;
-      }
-      .info-details p {
-        margin: 4px 0;
-        font-size: 0.95rem;
-        color: #cbd5f5;
-      }
-      .info-placeholder {
-        margin: 0;
-        color: #a0aec0;
-        font-size: 0.85rem;
-      }
-      .info-subtle {
-        color: #94a3b8;
-        font-size: 0.8rem;
-      }
-      .loading {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 100vw;
-        height: 100vh;
-        font-size: 1.05rem;
-        letter-spacing: 0.04em;
-      }
-      .banner {
-        position: absolute;
-        top: 12px;
-        left: 50%;
-        transform: translateX(-50%);
-        padding: 8px 18px;
-        border-radius: 999px;
-        font-size: 0.85rem;
-        border: 1px solid rgba(251, 191, 36, 0.3);
-        background: rgba(245, 158, 11, 0.2);
-        color: #facc15;
-        z-index: 10;
-        backdrop-filter: blur(8px);
-      }
-      .stage canvas {
-        display: block;
-      }
-      @media (max-width: 640px) {
-        .info-panel {
-          left: 50%;
-          transform: translateX(-50%);
-        }
-        .info-header {
-          flex-direction: column;
-          align-items: flex-start;
-        }
-        .ghost-btn {
-          width: 100%;
-          text-align: center;
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module">
-      import React, { Fragment, useEffect, useMemo, useRef, useState } from 'https://esm.sh/react@18.3.1';
-      import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client';
-      import { GraphCanvas, lightTheme } from 'https://esm.sh/reagraph@4.30.7?deps=react@18.3.1,react-dom@18.3.1';
+<head>
+  <meta charset="UTF-8" />
+  <title>Wrestling Graph</title>
+  <!-- Graphology + Sigma UMD builds -->
+  <script src="https://unpkg.com/graphology@0.25.4/dist/graphology.umd.min.js"></script>
+  <script src="https://unpkg.com/sigma@3.0.0/dist/sigma.min.js"></script>
+  <script src="https://unpkg.com/sigma@3.0.0/dist/sigma.min.js"></script>
+  <script src="https://unpkg.com/graphology-layout-force@0.2.4/index.js" type="module"></script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    #container {
+      width: 100vw;
+      height: 100vh;
+    }
+    .sigma-tooltip {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.8);
+      color: #fff;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      pointer-events: none;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div id="container"></div>
 
-      const GRAPH_URL = 'graph.json';
+  <script>
+    const container = document.getElementById("container");
 
-      const sampleGraph = {
-        nodes: [
-          { id: 'john-doe', name: 'John Doe', alias: 'The Anchor', wins: 32, losses: 8 },
-          { id: 'maria-ramos', name: 'Maria Ramos', alias: 'Skyline', wins: 40, losses: 5 },
-          { id: 'kevin-cho', name: 'Kevin Cho', alias: 'Northstar', wins: 27, losses: 12 },
-          { id: 'lena-wyatt', name: 'Lena Wyatt', alias: 'Switchblade', wins: 18, losses: 22 },
-          { id: 'darius-king', name: 'Darius King', alias: 'The Kingmaker', wins: 36, losses: 14 },
-          { id: 'ivy-storm', name: 'Ivy Storm', alias: 'Wildcard', wins: 21, losses: 19 },
-          { id: 'raul-santos', name: 'Raul Santos', alias: 'Thunderclap', wins: 24, losses: 16 },
-          { id: 'naomi-lane', name: 'Naomi Lane', alias: 'The Pulse', wins: 29, losses: 11 }
-        ],
-        links: [
-          { source: 'john-doe', target: 'maria-ramos', count: 4 },
-          { source: 'john-doe', target: 'kevin-cho', count: 2 },
-          { source: 'john-doe', target: 'ivy-storm', count: 2 },
-          { source: 'maria-ramos', target: 'darius-king', count: 3 },
-          { source: 'maria-ramos', target: 'naomi-lane', count: 5 },
-          { source: 'kevin-cho', target: 'lena-wyatt', count: 4 },
-          { source: 'kevin-cho', target: 'ivy-storm', count: 3 },
-          { source: 'darius-king', target: 'raul-santos', count: 6 },
-          { source: 'darius-king', target: 'naomi-lane', count: 2 },
-          { source: 'ivy-storm', target: 'raul-santos', count: 1 },
-          { source: 'raul-santos', target: 'naomi-lane', count: 2 },
-          { source: 'naomi-lane', target: 'lena-wyatt', count: 3 }
-        ]
-      };
+    // simple tooltip div
+    const tooltip = document.createElement("div");
+    tooltip.className = "sigma-tooltip";
+    tooltip.style.display = "none";
+    document.body.appendChild(tooltip);
 
-      const clamp = (value, min = 0, max = 1) => Math.min(max, Math.max(min, value ?? 0));
+    // Load graph JSON generated by Python
+    fetch("graph.json")
+      .then(r => r.json())
+      .then(data => {
+        const Graph = window.graphology;
+        const graph = new Graph();
 
-      const winPctToColor = (value) => {
-        const clamped = clamp(value);
-        const hue = 120 * clamped;
-        return `hsl(${hue.toFixed(1)}, 70%, 45%)`;
-      };
-
-      const normalizeGraph = (raw) => {
-        const nodes = (raw.nodes ?? []).map((node) => {
-          const wins = Number(node.wins ?? 0);
-          const losses = Number(node.losses ?? 0);
-          const total = wins + losses || 1;
-          const winPct = typeof node.winPct === 'number' ? clamp(node.winPct) : clamp(wins / total);
-          const baseSize = 8 + clamp(winPct) * 18;
-          const volumeBoost = Math.min(wins, 40) * 0.3;
-          return {
-            id: String(node.id),
-            label: node.name ?? String(node.id),
-            subLabel: `${wins}-${losses}`,
-            fill: winPctToColor(winPct),
-            size: baseSize + volumeBoost,
-            data: { ...node, wins, losses, winPct }
-          };
+        graph.import({
+          nodes: data.nodes.map(n => ({
+            key: n.id,
+            attributes: {
+              ...n.attributes,
+              x: n.attributes.x * 10,
+              y: n.attributes.y * 10,
+              size: n.attributes.size / 4,
+            },
+          })),
+          edges: data.edges.map(e => ({
+            ...e,
+            attributes: {
+              ...e.attributes,
+              size: 0.1,
+            }
+          })),
         });
 
-        const nodeIds = new Set(nodes.map((node) => node.id));
+        // Initialize Sigma
+        const renderer = new Sigma.Sigma(graph, container, {
+          renderEdgeLabels: false,
+          allowInvalidContainer: false,
+        });
 
-        const edges = (raw.links ?? [])
-          .filter((edge) => nodeIds.has(String(edge.source)) && nodeIds.has(String(edge.target)))
-          .map((edge, index) => {
-            const count = Number(edge.count ?? 1);
-            return {
-              id: edge.id ?? `${edge.source}-${edge.target}-${index}`,
-              source: String(edge.source),
-              target: String(edge.target),
-              label: count === 1 ? '1 match' : `${count} matches`,
-              size: 2 + Math.min(count, 10) * 0.6,
-              data: { ...edge, count }
-            };
-          });
+        // Node hover tooltip
+        renderer.on("enterNode", ({ node }) => {
+          const attrs = graph.getNodeAttributes(node);
+          tooltip.innerText = attrs.label || node;
+          tooltip.style.display = "block";
+        });
 
-        return { nodes, edges };
-      };
+        renderer.on("leaveNode", () => {
+          tooltip.style.display = "none";
+        });
 
-      const loadGraph = async (signal) => {
-        const response = await fetch(GRAPH_URL, { signal, cache: 'no-store' });
-        if (!response.ok) {
-          throw new Error(`Unable to load graph.json (status ${response.status})`);
-        }
-        const payload = await response.text();
-        if (!payload.trim()) {
-          throw new Error('graph.json is empty.');
-        }
-        const parsed = JSON.parse(payload);
-        if (!Array.isArray(parsed.nodes) || !Array.isArray(parsed.links)) {
-          throw new Error('graph.json must include "nodes" and "links" arrays.');
-        }
-        return normalizeGraph(parsed);
-      };
+        renderer.getMouseCaptor().on("mousemove", (e) => {
+          if (tooltip.style.display !== "none") {
+            tooltip.style.left = e.clientX + 10 + "px";
+            tooltip.style.top = e.clientY + 10 + "px";
+          }
+        });
 
-      const theme = {
-        ...lightTheme,
-        canvas: {
-          ...lightTheme.canvas,
-          background: '#040306'
-        }
-      };
-
-      const InfoPanel = ({ hovered, stats, onReset }) => (
-        React.createElement('section', { className: 'info-panel' },
-          React.createElement('div', { className: 'info-header' },
-            React.createElement('div', { className: 'info-meta' }, `${stats.nodes} nodes · ${stats.edges} edges`),
-            React.createElement('button', { className: 'ghost-btn', onClick: onReset }, 'Reset view')
-          ),
-          React.createElement('p', { className: 'info-hint' }, 'Scroll to zoom · Drag canvas or nodes to explore'),
-          hovered
-            ? React.createElement('div', { className: 'info-details' },
-                React.createElement('h2', null, hovered.label),
-                React.createElement('p', null, `${hovered.data?.wins ?? 0}-${hovered.data?.losses ?? 0} record (${((hovered.data?.winPct ?? 0) * 100).toFixed(1)}% win rate)`),
-                hovered.data?.alias
-                  ? React.createElement('p', { className: 'info-subtle' }, hovered.data.alias)
-                  : null
-              )
-            : React.createElement('p', { className: 'info-placeholder' }, 'Hover a node to view match stats.')
-        )
-      );
-
-      const App = () => {
-        const canvasRef = useRef(null);
-        const [graph, setGraph] = useState({ nodes: [], edges: [] });
-        const [status, setStatus] = useState('loading');
-        const [error, setError] = useState('');
-        const [hoveredNode, setHoveredNode] = useState(null);
-
-        useEffect(() => {
-          const controller = new AbortController();
-          loadGraph(controller.signal)
-            .then((data) => {
-              setGraph(data);
-              setStatus('ready');
-              setError('');
-            })
-            .catch((err) => {
-              console.warn('Falling back to bundled data', err);
-              setGraph(normalizeGraph(sampleGraph));
-              setStatus('ready');
-              setError(err.message);
-            });
-          return () => controller.abort();
-        }, []);
-
-        const handleReset = () => {
-          canvasRef.current?.fitNodesInView?.();
-        };
-
-        const stats = useMemo(() => ({ nodes: graph.nodes.length, edges: graph.edges.length }), [graph]);
-
-        if (status === 'loading') {
-          return React.createElement('div', { className: 'loading' }, 'Loading graph...');
-        }
-
-        return React.createElement(Fragment, null,
-          error
-            ? React.createElement('div', { className: 'banner' }, `${error} · Showing sample data`)
-            : null,
-          React.createElement('div', { className: 'stage' },
-            React.createElement(GraphCanvas, {
-              ref: canvasRef,
-              nodes: graph.nodes,
-              edges: graph.edges,
-              layoutType: 'forceDirected2d',
-              animated: true,
-              cameraMode: 'pan',
-              sizingType: 'attribute',
-              sizingAttribute: 'size',
-              minNodeSize: 6,
-              maxNodeSize: 42,
-              labelType: 'all',
-              draggable: true,
-              theme,
-              aggregateEdges: true,
-              onNodePointerOver: (node) => setHoveredNode(node),
-              onNodePointerOut: () => setHoveredNode(null),
-              onNodeClick: (node) => setHoveredNode(node)
-            }),
-            React.createElement(InfoPanel, { hovered: hoveredNode, stats, onReset: handleReset })
-          )
-        );
-      };
-
-      const root = createRoot(document.getElementById('root'));
-      root.render(React.createElement(App));
-    </script>
-  </body>
+        // Optional: focus on a node when clicked
+        renderer.on("clickNode", ({ node }) => {
+          const cam = renderer.getCamera();
+          const pos = renderer.getNodeDisplayData(node);
+          cam.animate(
+            {
+              x: pos.x,
+              y: pos.y,
+              ratio: 0.2,
+            },
+            { duration: 500 }
+          );
+        });
+      });
+  </script>
+</body>
 </html>

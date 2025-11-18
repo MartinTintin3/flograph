@@ -281,6 +281,10 @@ def create_match(id: int, topWrestler_id: int, bottomWrestler_id: int,
     conn = get_connection()
     cursor = conn.cursor()
 
+    if topWrestler_id is None or bottomWrestler_id is None:
+        conn.close()
+        return
+
     # Check if match with this ID already exists
     cursor.execute("SELECT id FROM matches WHERE id = ?", (id,))
     if cursor.fetchone() is not None:
