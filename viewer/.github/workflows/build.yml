@@ -1,0 +1,28 @@
+name: Build
+
+on:
+  push:
+    tags: "*"
+
+jobs:
+  build:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build sources
+        run: npm install && npm run build
+
+      - name: Uploading files
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ./packages/sigma/dist/sigma.min.js
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true

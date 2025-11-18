@@ -1,0 +1,13 @@
+**/dist/*
+**/build/*
+**/node_modules/*
+
+# Tests
+**/coverage/**
+**/playwright-report/**
+**/test-results/**
+
+# Doc and examples
+**/storybook-static/*
+**/typedoc/**
+**/.docusaurus/**

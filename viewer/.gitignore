@@ -1,0 +1,9 @@
+node_modules
+*.tgz
+*.log
+*.swp
+.DS_Store
+.idea
+.vscode
+
+*storybook.log
