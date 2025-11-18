@@ -1,5 +1,6 @@
 import sqlite3
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
+from datetime import datetime
 
 DATABASE_PATH = "data.db"
 
@@ -9,6 +10,34 @@ def get_connection():
 
 
 # ==================== WRESTLERS CRUD ====================
+
+def mark_fetch(id: str) -> None:
+    """Mark a fetch record with the current date. Inserts a new record or updates if it already exists."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    current_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Use UPSERT pattern: try to insert, or update if it already exists
+    cursor.execute(
+        """INSERT INTO fetched (id, date) VALUES (?, ?)
+           ON CONFLICT(id) DO UPDATE SET date = excluded.date""",
+        (id, current_date)
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_last_fetch_date(id: str) -> Optional[str]:
+    """Get the last fetch date for a given id, or return None if not found."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT date FROM fetched WHERE id = ?", (id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
 
 def create_wrestler(id: int, name: str, team_id: str) -> None:
     """Create a new wrestler with the given ID. Does nothing if ID already exists."""
@@ -247,7 +276,7 @@ def get_wrestlers_by_team(team_id: int) -> List[Tuple]:
 # ==================== MATCHES CRUD ====================
 
 def create_match(id: int, topWrestler_id: int, bottomWrestler_id: int,
-                winner_id: int, weightClass: str, event_id: int, matchDate: str, result: str, winType: str) -> None:
+                winner_id: int, weightClass: str, event_id: int, date: str, result: str, winType: str) -> None:
     """Create a new match with the given ID. Does nothing if ID already exists."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -260,10 +289,10 @@ def create_match(id: int, topWrestler_id: int, bottomWrestler_id: int,
 
     cursor.execute(
         """INSERT INTO matches (id, topWrestler_id, bottomWrestler_id, winner_id,
-           weightClass, event_id, matchDate, result, winType)
+           weightClass, event_id, date, result, winType)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (id, topWrestler_id, bottomWrestler_id, winner_id, weightClass,
-         event_id, matchDate, result, winType)
+         event_id, date, result, winType)
     )
     conn.commit()
     conn.close()
@@ -333,5 +362,190 @@ def initialize_database():
         schema = f.read()
         cursor.executescript(schema)
 
+    conn.commit()
+    conn.close()
+
+
+# ==================== CRAWLER STATE ====================
+
+def upsert_crawler_state(seed_id: str, depth_limit: int) -> None:
+    """Persist the crawler configuration (seed + depth)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO crawler_state (id, seed_id, depth_limit)
+               VALUES (1, ?, ?)
+               ON CONFLICT(id) DO UPDATE
+               SET seed_id = excluded.seed_id,
+                   depth_limit = excluded.depth_limit,
+                   updated_at = CURRENT_TIMESTAMP""",
+        (seed_id, depth_limit),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_crawler_state() -> Optional[Dict[str, int]]:
+    """Return the stored crawler configuration, if any."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT seed_id, depth_limit FROM crawler_state WHERE id = 1")
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return {"seed_id": row[0], "depth_limit": row[1]}
+
+
+def clear_crawler_state() -> None:
+    """Remove crawler metadata and frontier tables."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM crawler_state")
+    cursor.execute("DELETE FROM crawl_queue")
+    cursor.execute("DELETE FROM crawl_seen")
+    conn.commit()
+    conn.close()
+
+
+# ==================== CRAWL FRONTIER HELPERS ====================
+
+def enqueue_wrestler(wrestler_id: str, depth: int) -> None:
+    """Add or update a wrestler in the crawl queue."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO crawl_queue (wrestler_id, depth)
+               VALUES (?, ?)
+               ON CONFLICT(wrestler_id) DO UPDATE
+               SET depth = excluded.depth,
+                   enqueued_at = CURRENT_TIMESTAMP""",
+        (wrestler_id, depth),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_from_queue(wrestler_id: str) -> None:
+    """Remove a wrestler from the crawl queue."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM crawl_queue WHERE wrestler_id = ?", (wrestler_id,))
+    conn.commit()
+    conn.close()
+
+
+def clear_queue() -> None:
+    """Remove all entries from the crawl queue."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM crawl_queue")
+    conn.commit()
+    conn.close()
+
+
+def get_queue_items() -> List[Tuple[str, int]]:
+    """Return all queue entries ordered by enqueue time."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM crawl_queue WHERE wrestler_id IS NULL OR wrestler_id = ''")
+    conn.commit()
+    cursor.execute(
+        "SELECT wrestler_id, depth FROM crawl_queue ORDER BY enqueued_at ASC"
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_queue_count() -> int:
+    """Return the number of outstanding queue entries."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM crawl_queue")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+
+def record_seen_wrestler(wrestler_id: str, depth: int) -> None:
+    """Track that a wrestler has been discovered at a specific depth."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO crawl_seen (wrestler_id, depth)
+               VALUES (?, ?)
+               ON CONFLICT(wrestler_id) DO UPDATE
+               SET depth = MIN(depth, excluded.depth)""",
+        (wrestler_id, depth),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_seen_wrestlers() -> List[Tuple[str, int]]:
+    """Return all seen wrestlers with their depth."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT wrestler_id, depth FROM crawl_seen")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def mark_wrestler_processed(wrestler_id: str) -> None:
+    """Set processed_at for a wrestler once crawling is complete."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE crawl_seen SET processed_at = CURRENT_TIMESTAMP WHERE wrestler_id = ?",
+        (wrestler_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_processed_wrestlers() -> List[str]:
+    """Return wrestler IDs that have already been processed."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT wrestler_id FROM crawl_seen WHERE processed_at IS NOT NULL")
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+
+def get_unprocessed_wrestlers(max_depth: Optional[int] = None) -> List[Tuple[str, int]]:
+    """Return wrestlers that have been discovered but not processed yet."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    query = "SELECT wrestler_id, depth FROM crawl_seen WHERE processed_at IS NULL"
+    params: List[int] = []
+    if max_depth is not None:
+        query += " AND depth <= ?"
+        params.append(max_depth)
+    query += " ORDER BY depth ASC"
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_all_fetched_ids() -> List[str]:
+    """Return IDs that have already been fully processed."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM fetched")
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+
+def clear_frontier_tables() -> None:
+    """Helper to drop queue/seen entries without touching metadata."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM crawl_queue")
+    cursor.execute("DELETE FROM crawl_seen")
     conn.commit()
     conn.close()
