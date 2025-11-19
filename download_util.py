@@ -1,6 +1,7 @@
 from collections import deque
 from datetime import date, datetime
 from typing import Optional
+import time
 
 import requests
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
@@ -10,6 +11,43 @@ import db
 include = ["bottomWrestler.team", "topWrestler.team", "weightClass", "event"]
 
 PAGE_SIZE = 40
+
+
+class RequestTracker:
+	"""Track API request rate over time windows."""
+
+	def __init__(self):
+		# Store request timestamps (Unix timestamps)
+		self.request_times = deque()
+
+	def record_request(self):
+		"""Record a new API request timestamp."""
+		current_time = time.time()
+		self.request_times.append(current_time)
+		self.cleanup()
+
+	def cleanup(self):
+		"""Remove timestamps older than 15 minutes (900 seconds)."""
+		current_time = time.time()
+		cutoff_time = current_time - 900  # 15 minutes
+
+		# Remove old entries from the left (oldest)
+		while self.request_times and self.request_times[0] < cutoff_time:
+			self.request_times.popleft()
+
+	def requests_per_minute(self) -> int:
+		"""Calculate number of requests in the last 60 seconds."""
+		if not self.request_times:
+			return 0
+
+		current_time = time.time()
+		cutoff_time = current_time - 60
+
+		return sum(1 for req_time in self.request_times if req_time >= cutoff_time)
+
+	def requests_per_15_minutes(self) -> int:
+		"""Calculate number of requests in the last 900 seconds (15 minutes)."""
+		return len(self.request_times)
 
 def get_lookup(id: str, lookup: dict, default=None):
 	if id is None:
@@ -153,7 +191,7 @@ def update_db(
 	db.mark_fetch(this_id)
 	return opponents
 
-def download_matches(id, allowed_weights=None, start_date: Optional[str] = None, end_date: Optional[str] = None):
+def download_matches(id, allowed_weights=None, start_date: Optional[str] = None, end_date: Optional[str] = None, tracker: Optional[RequestTracker] = None):
 	offset = 0
 	data = None
 	cur = f"https://floarena-api.flowrestling.org/bouts/?identityPersonId={id}&page[size]={PAGE_SIZE}&page[offset]={offset}&hasResult=true&include=" + ",".join(include)
@@ -164,9 +202,18 @@ def download_matches(id, allowed_weights=None, start_date: Optional[str] = None,
 	cur += "&fields[weightClass]=name"
 	cur += "&fields[bout]=topWrestlerId,bottomWrestlerId,weightClassId,eventId,goDateTime,startDateTime,endDateTime,result,winnerWrestlerId,winType,eventId"
 
+	# Track the request
+	if tracker:
+		tracker.record_request()
+
 	req = requests.get(cur)
 	if req.status_code != 200:
-		raise Exception(f"Failed to download matches for id {id}: {req.status_code} {req.text}")
+		error_msg = f"Failed to download matches for id {id}: {req.status_code} {req.text}"
+		if tracker:
+			req_per_min = tracker.requests_per_minute()
+			req_per_15min = tracker.requests_per_15_minutes()
+			error_msg += f"\n\nRequest rate at failure:\n  Requests/minute: {req_per_min}\n  Requests/15min: {req_per_15min}"
+		raise Exception(error_msg)
 	data = req.json()
 
 	start_bound = _normalize_date_bound(start_date)
@@ -175,13 +222,23 @@ def download_matches(id, allowed_weights=None, start_date: Optional[str] = None,
 
 	while "next" in data["links"] and data["links"]["next"] != cur:
 		cur = data["links"]["next"]
+
+		# Track the request
+		if tracker:
+			tracker.record_request()
+
 		req = requests.get(cur)
 		if req.status_code != 200:
-			raise Exception(f"Failed to download matches for id {id}: {req.status_code}")
+			error_msg = f"Failed to download matches for id {id}: {req.status_code}"
+			if tracker:
+				req_per_min = tracker.requests_per_minute()
+				req_per_15min = tracker.requests_per_15_minutes()
+				error_msg += f"\n\nRequest rate at failure:\n  Requests/minute: {req_per_min}\n  Requests/15min: {req_per_15min}"
+			raise Exception(error_msg)
 		next_data = req.json()
 		opponents.update(update_db(next_data, id, allowed_weights, start_bound, end_bound))
 		data = next_data
-	
+
 	return opponents
 
 def crawl(seed_id: str, depth: int = 10, reset: bool = False, allowed_weights=None, start_date: Optional[str] = None, end_date: Optional[str] = None):
@@ -261,13 +318,18 @@ def crawl(seed_id: str, depth: int = 10, reset: bool = False, allowed_weights=No
 			db.enqueue_wrestler(seed_id, 0)
 			queue.append((seed_id, 0))
 
+	# Create request tracker to monitor API request rates
+	tracker = RequestTracker()
+
 	with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         TextColumn(
             "• depth={task.fields[depth]} "
             "queue={task.fields[queue]} "
-            "processed={task.completed}"
+            "processed={task.completed} "
+            "req/min={task.fields[reqs_per_min]} "
+            "req/15min={task.fields[reqs_per_15min]}"
         ),
         TimeElapsedColumn(),
         transient=True,
@@ -277,6 +339,8 @@ def crawl(seed_id: str, depth: int = 10, reset: bool = False, allowed_weights=No
             depth=0,
             queue=len(queue),
             total=None,
+            reqs_per_min=0,
+            reqs_per_15min=0,
         )
 
 		while queue:
@@ -286,6 +350,8 @@ def crawl(seed_id: str, depth: int = 10, reset: bool = False, allowed_weights=No
                 task_id,
                 depth=current_depth,
                 queue=len(queue),
+                reqs_per_min=tracker.requests_per_minute(),
+                reqs_per_15min=tracker.requests_per_15_minutes(),
             )
 
 			if current_depth >= depth:
@@ -298,7 +364,7 @@ def crawl(seed_id: str, depth: int = 10, reset: bool = False, allowed_weights=No
 				db.remove_from_queue(wrestler_id)
 				continue
 
-			opponents = download_matches(wrestler_id, allowed_weight_filters, start_date, end_date)
+			opponents = download_matches(wrestler_id, allowed_weight_filters, start_date, end_date, tracker)
 			processed.add(wrestler_id)
 			db.mark_wrestler_processed(wrestler_id)
 			progress.advance(task_id, 1)

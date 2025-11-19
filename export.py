@@ -3,6 +3,8 @@ import sqlite3
 import json
 from datetime import datetime
 import networkx as nx
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import multiprocessing as mp
 
 import math
 
@@ -132,38 +134,13 @@ def calculate_size(matches, stats_lookup, min_size=2, max_size=15):
     return min_size + normalized * (max_size - min_size)
 
 
-def main():
-    args = parse_args()
-
-    if args.start_date and args.end_date and args.start_date > args.end_date:
-        raise SystemExit("start-date must be less than or equal to end-date")
-
-    start_arg = _format_cli_timestamp(args.start_date) if args.start_date else None
-    end_arg = _format_cli_timestamp(args.end_date) if args.end_date else None
-
-    weight_classes = normalize_weight_classes(args.weight_classes)
-
-    if weight_classes:
-        print("Starting export for weight classes:", ", ".join(weight_classes))
-    else:
-        print("Starting export for all weight classes...")
-    if start_arg or end_arg:
-        print(
-            "Applying date filter:",
-            f"{start_arg or '-∞'} to {end_arg or '+∞'}",
-        )
-    print("Connecting to database...")
-
+def _fetch_wrestler_stats(args):
+    """Fetch wrestler statistics from database. Called in thread pool."""
+    where_clause, where_params = args
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     cur = con.cursor()
 
-    where_clause, where_params = build_match_filters(
-        weight_classes, start_arg, end_arg
-    )
-
-    # 1) Nodes = wrestlers in this weight with aggregated win/loss info
-    print("Fetching wrestler data...")
     cur.execute(
         f"""
         SELECT
@@ -193,10 +170,17 @@ def main():
             "winPct": win_pct,
         }
 
-    print(f"Found {len(wrestler_stats)} wrestlers")
+    con.close()
+    return wrestler_stats
 
-    # 2) Aggregated links: winner -> loser with counts
-    print("Fetching match edges...")
+
+def _fetch_edges(args):
+    """Fetch match edges from database. Called in thread pool."""
+    where_clause, where_params = args
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    cur = con.cursor()
+
     cur.execute(
         f"""
         SELECT
@@ -225,6 +209,82 @@ def main():
             }
         )
 
+    con.close()
+    return edges_data
+
+
+def _build_node(args):
+    """Build a single node with attributes. Called in process pool."""
+    wrestler_id, stats, pos, stats_lookup = args
+    x, y = pos[wrestler_id]
+    color = win_pct_to_color(stats["winPct"])
+    size = calculate_size(stats["matches"], stats_lookup)
+
+    return {
+        "id": wrestler_id,
+        "attributes": {
+            "label": stats["name"],
+            "x": x,
+            "y": y,
+            "color": color,
+            "size": size,
+            "wins": stats["wins"],
+            "losses": stats["losses"],
+        }
+    }
+
+
+def _build_edge(edge_data):
+    """Build a single edge with attributes. Called in process pool."""
+    source = edge_data["source"]
+    target = edge_data["target"]
+    key = f"{source}>{target}"
+
+    return {
+        "key": key,
+        "source": source,
+        "target": target,
+        "attributes": {
+            "type": "arrow"
+        }
+    }
+
+
+def main():
+    args = parse_args()
+
+    if args.start_date and args.end_date and args.start_date > args.end_date:
+        raise SystemExit("start-date must be less than or equal to end-date")
+
+    start_arg = _format_cli_timestamp(args.start_date) if args.start_date else None
+    end_arg = _format_cli_timestamp(args.end_date) if args.end_date else None
+
+    weight_classes = normalize_weight_classes(args.weight_classes)
+
+    if weight_classes:
+        print("Starting export for weight classes:", ", ".join(weight_classes))
+    else:
+        print("Starting export for all weight classes...")
+    if start_arg or end_arg:
+        print(
+            "Applying date filter:",
+            f"{start_arg or '-∞'} to {end_arg or '+∞'}",
+        )
+
+    where_clause, where_params = build_match_filters(
+        weight_classes, start_arg, end_arg
+    )
+
+    # 1 & 2) Fetch wrestler stats and edges in parallel using ThreadPoolExecutor
+    print("Fetching wrestler data and match edges (in parallel)...")
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        stats_future = executor.submit(_fetch_wrestler_stats, (where_clause, where_params))
+        edges_future = executor.submit(_fetch_edges, (where_clause, where_params))
+
+        wrestler_stats = stats_future.result()
+        edges_data = edges_future.result()
+
+    print(f"Found {len(wrestler_stats)} wrestlers")
     print(f"Found {len(edges_data)} edges")
 
     # 3) Build NetworkX graph for layout calculation
@@ -243,47 +303,25 @@ def main():
 
     # 4) Calculate spring layout positions
     print("Calculating spring layout (this may take a moment)...")
-    pos = nx.spring_layout(G, k=100 / math.sqrt(G.number_of_nodes()), iterations=50, seed=42, method="force",)
+    pos = nx.spring_layout(G, k=25 / math.sqrt(G.number_of_nodes()), iterations=50, seed=42, method="force")
     print("Layout calculation complete!")
 
-    print("Building output nodes with attributes...")
-    nodes = []
-    for wrestler_id, stats in wrestler_stats.items():
-        x, y = pos[wrestler_id]
-        color = win_pct_to_color(stats["winPct"])
-        size = calculate_size(stats["matches"], wrestler_stats)
+    # 5 & 6) Build output nodes and edges in parallel using ProcessPoolExecutor
+    print("Building output nodes and edges (in parallel)...")
 
-        nodes.append({
-            "id": wrestler_id,
-            "attributes": {
-                "label": stats["name"],
-                "x": x,
-                "y": y,
-                "color": color,
-                "size": size,
-                "wins": stats["wins"],
-                "losses": stats["losses"],
-            }
-        })
+    # Prepare node arguments
+    node_args = [
+        (wrestler_id, wrestler_stats[wrestler_id], pos, wrestler_stats)
+        for wrestler_id in wrestler_stats.keys()
+    ]
 
-    # 8) Build output edges with new format
-    print("Building output edges...")
-    edges = []
-    for edge_data in edges_data:
-        source = edge_data["source"]
-        target = edge_data["target"]
-        key = f"{source}>{target}"
+    # Use ProcessPoolExecutor for CPU-bound node and edge construction
+    num_workers = max(1, mp.cpu_count() - 1)
+    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+        nodes = list(executor.map(_build_node, node_args))
+        edges = list(executor.map(_build_edge, edges_data))
 
-        edges.append({
-            "key": key,
-            "source": source,
-            "target": target,
-            "attributes": {
-                "type": "arrow"
-            }
-        })
-
-    # 9) Create final graph structure
+    # 7) Create final graph structure
     print("Creating final graph structure...")
     graph = {"nodes": nodes, "edges": edges}
 

@@ -8,7 +8,7 @@ import useDebounce from "../use-debounce";
 const NODE_FADE_COLOR = "#bbb";
 const EDGE_FADE_COLOR = "#eee";
 
-const GraphSettingsController: FC<PropsWithChildren<{ hoveredNode: string | null }>> = ({ children, hoveredNode }) => {
+const GraphSettingsController: FC<PropsWithChildren<{ hoveredNode: string | null; focusedNode: string | null }>> = ({ children, hoveredNode, focusedNode }) => {
   const sigma = useSigma();
   const setSettings = useSetSettings();
   const graph = sigma.getGraph();
@@ -29,10 +29,12 @@ const GraphSettingsController: FC<PropsWithChildren<{ hoveredNode: string | null
       defaultDrawNodeHover: drawHover,
       nodeReducer: (node: string, data: Attributes) => {
         if (debouncedHoveredNode) {
-          return node === debouncedHoveredNode ||
+          const isConnected = node === debouncedHoveredNode ||
             graph.hasEdge(node, debouncedHoveredNode) ||
-            graph.hasEdge(debouncedHoveredNode, node)
-            ? { ...data, zIndex: 1 }
+            graph.hasEdge(debouncedHoveredNode, node);
+
+          return isConnected
+            ? { ...data, zIndex: 1, forceLabel: true }
             : { ...data, zIndex: 0, label: "", color: NODE_FADE_COLOR, image: null, highlighted: false };
         }
         return data;
@@ -58,12 +60,15 @@ const GraphSettingsController: FC<PropsWithChildren<{ hoveredNode: string | null
     sigma.setSetting(
       "nodeReducer",
       debouncedHoveredNode
-        ? (node, data) =>
-            node === debouncedHoveredNode ||
-            graph.hasEdge(node, debouncedHoveredNode) ||
-            graph.hasEdge(debouncedHoveredNode, node)
-              ? { ...data, zIndex: 1 }
-              : { ...data, zIndex: 0, label: "", color: NODE_FADE_COLOR, image: null, highlighted: false }
+        ? (node, data) => {
+            const isConnected = node === debouncedHoveredNode ||
+              graph.hasEdge(node, debouncedHoveredNode) ||
+              graph.hasEdge(debouncedHoveredNode, node);
+
+            return isConnected
+              ? { ...data, zIndex: 1, forceLabel: true }
+              : { ...data, zIndex: 0, label: "", color: NODE_FADE_COLOR, image: null, highlighted: false };
+          }
         : null,
     );
     sigma.setSetting(
@@ -76,6 +81,46 @@ const GraphSettingsController: FC<PropsWithChildren<{ hoveredNode: string | null
         : null,
     );
   }, [debouncedHoveredNode]);
+
+  /**
+   * Update node and edge reducers when a node is focused (clicked), to show all
+   * connected node labels regardless of size threshold:
+   */
+  useEffect(() => {
+    if (focusedNode) {
+      const focusedColor: string = sigma.getNodeDisplayData(focusedNode)?.color || "";
+
+      sigma.setSetting(
+        "nodeReducer",
+        (node, data) => {
+          const isConnected =
+            node === focusedNode ||
+            graph.hasEdge(node, focusedNode) ||
+            graph.hasEdge(focusedNode, node);
+
+          if (isConnected) {
+            // Force label to show for focused node and its neighbors
+            return { ...data, zIndex: 1, forceLabel: true };
+          } else {
+            // Fade out all other nodes
+            return { ...data, zIndex: 0, label: "", color: NODE_FADE_COLOR, image: null, highlighted: false };
+          }
+        },
+      );
+
+      sigma.setSetting(
+        "edgeReducer",
+        (edge, data) =>
+          graph.hasExtremity(edge, focusedNode)
+            ? { ...data, color: focusedColor, size: 4 }
+            : { ...data, color: EDGE_FADE_COLOR, hidden: true },
+      );
+    } else {
+      // Reset reducers when no node is focused
+      sigma.setSetting("nodeReducer", null);
+      sigma.setSetting("edgeReducer", null);
+    }
+  }, [focusedNode]);
 
   return <>{children}</>;
 };

@@ -1,6 +1,6 @@
 import { FullScreenControl, SigmaContainer, ZoomControl } from "@react-sigma/core";
 import { DirectedGraph } from "graphology";
-import { FC, useCallback, useEffect, useMemo, useState } from "react";
+import { FC, useEffect, useMemo, useState } from "react";
 import { BiBookContent, BiRadioCircleMarked } from "react-icons/bi";
 import { BsArrowsFullscreen, BsFullscreenExit, BsZoomIn, BsZoomOut } from "react-icons/bs";
 import { GrClose } from "react-icons/gr";
@@ -14,7 +14,7 @@ import GraphSettingsController from "./GraphSettingsController";
 import GraphTitle from "./GraphTitle";
 import NodeDetailsPanel from "./NodeDetailsPanel";
 import SearchField from "./SearchField";
-import SpacingControl from "./SpacingControl";
+import SpacingControl from "./LabelControl";
 
 const GRAPH_PATH = "./graph.json";
 const SAMPLE_GRAPH_PATH = "./graph.sample.json";
@@ -27,7 +27,7 @@ const Root: FC = () => {
   const [focusedNode, setFocusedNode] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [spacingScale, setSpacingScale] = useState(1);
+  const [labelSizeThreshold, setLabelSizeThreshold] = useState<number>(10);
   const sigmaSettings: Partial<Settings> = useMemo(
     () => ({
       defaultDrawNodeLabel: drawLabel,
@@ -36,31 +36,13 @@ const Root: FC = () => {
       defaultEdgeType: "arrow",
       labelDensity: 0.5,
       labelGridCellSize: 30,
-      labelRenderedSizeThreshold: 10,
+      labelRenderedSizeThreshold: labelSizeThreshold,
       labelAllowOverlap: true,
       labelFont: "Lato, sans-serif",
       zIndex: true,
     }),
-    [],
+    [labelSizeThreshold]
   );
-
-  const applySpacingScale = useCallback(
-    (scale: number) => {
-      graph.forEachNode((node, attributes) => {
-        const baseX = (attributes as typeof attributes & { baseX?: number }).baseX ?? (attributes.x as number);
-        const baseY = (attributes as typeof attributes & { baseY?: number }).baseY ?? (attributes.y as number);
-        graph.setNodeAttribute(node, "baseX", baseX);
-        graph.setNodeAttribute(node, "baseY", baseY);
-        graph.setNodeAttribute(node, "x", baseX * scale);
-        graph.setNodeAttribute(node, "y", baseY * scale);
-      });
-    },
-    [graph],
-  );
-
-  useEffect(() => {
-    applySpacingScale(spacingScale);
-  }, [applySpacingScale, spacingScale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,7 +68,6 @@ const Root: FC = () => {
       if (!cancelled) {
         setFocusedNode(null);
         setHoveredNode(null);
-        applySpacingScale(spacingScale);
         requestAnimationFrame(() => setDataReady(true));
       }
     };
@@ -122,16 +103,18 @@ const Root: FC = () => {
     };
 
     loadData();
+    window['graph'] = graph;  
 
     return () => {
       cancelled = true;
     };
-  }, [applySpacingScale, graph, spacingScale]);
+
+  }, [graph]);
 
   return (
     <div id="app-root" className={showContents ? "show-contents" : ""}>
       <SigmaContainer graph={graph} settings={sigmaSettings} className="react-sigma">
-        <GraphSettingsController hoveredNode={hoveredNode} />
+        <GraphSettingsController hoveredNode={hoveredNode} focusedNode={focusedNode} />
         <GraphEventsController setHoveredNode={setHoveredNode} setFocusedNode={setFocusedNode} />
 
         {!dataReady && !errorMessage && <div className="loading-banner">Loading graph data…</div>}
@@ -175,7 +158,7 @@ const Root: FC = () => {
               <GraphTitle subtitle={statusMessage || undefined} />
               <div className="panels">
                 <SearchField onSelectNode={setFocusedNode} />
-                <SpacingControl value={spacingScale} onChange={setSpacingScale} />
+                <SpacingControl min={0} max={Math.max(...graph.mapNodes((_, n) => n.size))} value={labelSizeThreshold} onChange={setLabelSizeThreshold} />
                 <DescriptionPanel />
                 <NodeDetailsPanel graph={graph} nodeId={focusedNode || hoveredNode} />
               </div>

@@ -47,6 +47,9 @@ const NodeDetailsPanel: FC<NodeDetailsPanelProps> = ({ graph, nodeId }) => {
           <li>
             Layout coords: (<code>{attributes.x.toFixed(2)}</code>, <code>{attributes.y.toFixed(2)}</code>)
           </li>
+          <li>
+            <a href={`https://flowrestling.org/athletes/${nodeId}`}>Link to profile</a>
+          </li>
         </ul>
       )}
     </Panel>

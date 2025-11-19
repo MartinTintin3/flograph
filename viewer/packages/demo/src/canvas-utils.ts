@@ -96,21 +96,23 @@ export function drawHover(context: CanvasRenderingContext2D, data: PlainObject, 
  */
 export function drawLabel(
   context: CanvasRenderingContext2D,
-  data: PartialButFor<NodeDisplayData, "x" | "y" | "size" | "label" | "color">,
+  data: PartialButFor<NodeDisplayData, "x" | "y" | "size" | "label" | "color"> & { forceLabel?: boolean },
   settings: Settings,
 ): void {
-  if (!data.label) return;
+  // Skip rendering if no label and not forced to show
+  if (!data.label && !data.forceLabel) return;
 
+  const label = data.label || "";
   const size = settings.labelSize,
     font = settings.labelFont,
     weight = settings.labelWeight;
 
   context.font = `${weight} ${size}px ${font}`;
-  const width = context.measureText(data.label).width + 8;
+  const width = context.measureText(label).width + 8;
 
   context.fillStyle = "#ffffffcc";
   context.fillRect(data.x + data.size, data.y + size / 3 - 15, width, 20);
 
   context.fillStyle = "#000";
-  context.fillText(data.label, data.x + data.size + 3, data.y + size / 3);
+  context.fillText(label, data.x + data.size + 3, data.y + size / 3);
 }
