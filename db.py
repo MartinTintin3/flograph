@@ -8,7 +8,6 @@ def get_connection():
     """Get a connection to the database."""
     return sqlite3.connect(DATABASE_PATH)
 
-
 # ==================== WRESTLERS CRUD ====================
 
 def mark_fetch(id: str) -> None:
@@ -553,3 +552,70 @@ def clear_frontier_tables() -> None:
     cursor.execute("DELETE FROM crawl_seen")
     conn.commit()
     conn.close()
+
+
+# ==================== RATINGS CRUD ====================
+
+def upsert_rating(wrestler_id: str, weight_class: str, rating: float, rd: float,
+                  volatility: float, last_updated: str) -> None:
+    """Insert or update a wrestler's rating for a specific weight class."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """INSERT INTO ratings (wrestler_id, weight_class, rating, rd, volatility, last_updated)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(wrestler_id, weight_class) DO UPDATE
+           SET rating = excluded.rating,
+               rd = excluded.rd,
+               volatility = excluded.volatility,
+               last_updated = excluded.last_updated""",
+        (wrestler_id, weight_class, rating, rd, volatility, last_updated)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_rating(wrestler_id: str, weight_class: str) -> Optional[Tuple]:
+    """Get a wrestler's rating for a specific weight class."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM ratings WHERE wrestler_id = ? AND weight_class = ?",
+        (wrestler_id, weight_class)
+    )
+    result = cursor.fetchone()
+    conn.close()
+    return result
+
+
+def get_ratings_for_wrestler(wrestler_id: str) -> List[Tuple]:
+    """Get all ratings for a wrestler across all weight classes."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM ratings WHERE wrestler_id = ?", (wrestler_id,))
+    results = cursor.fetchall()
+    conn.close()
+    return results
+
+
+def get_all_ratings() -> List[Tuple]:
+    """Get all wrestler ratings."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM ratings")
+    results = cursor.fetchall()
+    conn.close()
+    return results
+
+
+def clear_ratings() -> None:
+    """Delete all ratings from the database."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM ratings")
+    conn.commit()
+    conn.close()
+
+
+# Initialize database schema on module import
+initialize_database()

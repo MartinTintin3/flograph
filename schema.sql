@@ -58,3 +58,14 @@ CREATE TABLE IF NOT EXISTS crawler_state (
 	created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS ratings (
+	wrestler_id TEXT NOT NULL,
+	weight_class TEXT NOT NULL,
+	rating REAL,
+	rd REAL,
+	volatility REAL,
+	last_updated TEXT,
+	PRIMARY KEY(wrestler_id, weight_class),
+	FOREIGN KEY(wrestler_id) REFERENCES wrestlers(id)
+);
